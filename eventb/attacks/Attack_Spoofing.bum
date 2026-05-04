@@ -1,0 +1,261 @@
+/* =========================================================================
+   Event-B Machine: Attack_Spoofing
+   Attack Scenario A: Sensor Spoofing
+
+   An attacker intercepts the GlucoseReading flow (F1) via the NetworkInterface
+   and replaces the glucose_reading variable with a falsely high value while
+   the patient is actually hypoglycaemic.
+
+   HAZOP classification:
+     Flow: GlucoseSensor → DoseCalculator (GlucoseReading)
+     Guide word: MORE
+     Deviation: glucose_reading > HYPER_THRESHOLD while actual glucose < HYPO_THRESHOLD
+
+   VIOLATED INVARIANT:
+     INV2: delivered_dose > 0 ⇒ glucose_reading ≥ HYPO_THRESHOLD
+     — The invariant is stated in terms of the system's variable glucose_reading.
+        Under spoofing, glucose_reading is high (so the condition holds for the variable),
+        but the variable no longer reflects reality.
+        We therefore REFINE the invariant using actual_glucose (ground truth):
+        INV2': delivered_dose > 0 ⇒ actual_glucose ≥ HYPO_THRESHOLD
+        This proof obligation FAILS after ATK_SpoofGlucoseReading fires.
+
+   Proof result in Rodin:
+     inv_s2_refined: UNPROVABLE — attack violates hypoglycaemia protection.
+     All other invariants: provable.
+   ========================================================================= */
+
+MACHINE Attack_Spoofing
+SEES InsulinPump_Ctx
+
+VARIABLES
+  gs_state
+  dc_state
+  sm_state
+  pa_state
+  ni_state
+  /* ── Refined glucose model: distinguish reported from actual ── */
+  actual_glucose     /* ground truth: what the patient's glucose actually is */
+  glucose_reading    /* what the system sees: can be spoofed */
+  dose_request
+  dose_command
+  battery_level
+  command_approved
+  delivered_dose
+
+INVARIANTS
+  inv_t1:  gs_state        ∈ GS_STATE
+  inv_t2:  dc_state        ∈ DC_STATE
+  inv_t3:  sm_state        ∈ SM_STATE
+  inv_t4:  pa_state        ∈ PA_STATE
+  inv_t5:  ni_state        ∈ NI_STATE
+  inv_t6:  actual_glucose  ∈ ℕ
+  inv_t7:  glucose_reading ∈ ℕ
+  inv_t8:  dose_request    ∈ ℕ
+  inv_t9:  dose_command    ∈ ℕ
+  inv_t10: battery_level   ∈ 0‥100
+  inv_t11: command_approved ∈ BOOL
+  inv_t12: delivered_dose  ∈ ℕ
+
+  inv_s1: delivered_dose ≤ MAX_SAFE_DOSE
+
+  /* INV2 — REFINED to use actual_glucose as ground truth.
+     Under spoofing, this invariant CANNOT be proved after
+     ATK_SpoofGlucoseReading fires and delivery subsequently occurs. */
+  inv_s2: delivered_dose > 0 ⇒ actual_glucose ≥ HYPO_THRESHOLD
+
+  inv_s3: delivered_dose > 0 ⇒ battery_level  ≥ MIN_BATTERY_LEVEL
+  inv_s4: delivered_dose > 0 ⇒ command_approved = TRUE
+  inv_s5: dose_request    ≤ MAX_SAFE_DOSE
+
+  /* Consistency: in absence of attack, glucose_reading = actual_glucose */
+  inv_consistency: ni_state = NI_IDLE ⇒ glucose_reading = actual_glucose
+
+EVENTS
+
+  INITIALISATION
+  BEGIN
+    gs_state         := GS_IDLE
+    dc_state         := DC_WAITING
+    sm_state         := SM_MONITORING
+    pa_state         := PA_IDLE
+    ni_state         := NI_IDLE
+    actual_glucose   := 0
+    glucose_reading  := 0
+    dose_request     := 0
+    dose_command     := 0
+    battery_level    := 100
+    command_approved := FALSE
+    delivered_dose   := 0
+  END
+
+  /* Normal operation events — identical to InsulinPump.bum */
+
+  GS_StartMeasurement
+  WHERE
+    grd1: gs_state = GS_IDLE
+    grd2: battery_level ≥ MIN_BATTERY_LEVEL
+  THEN
+    gs_state := GS_MEASURING
+  END
+
+  GS_MeasurementReady
+  ANY g
+  WHERE
+    grd1: gs_state = GS_MEASURING
+    grd2: g        ∈ ℕ
+  THEN
+    actual_glucose  := g
+    glucose_reading := g   /* without attack: reported = actual */
+    gs_state        := GS_TRANSMITTING
+  END
+
+  GS_TransmitReading
+  WHERE
+    grd1: gs_state = GS_TRANSMITTING
+    grd2: dc_state = DC_WAITING
+  THEN
+    gs_state := GS_IDLE
+    dc_state := DC_COMPUTING
+  END
+
+  DC_ComputeDose
+  ANY d
+  WHERE
+    grd1: dc_state        = DC_COMPUTING
+    grd2: d               ∈ ℕ
+    grd3: d               ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading < HYPO_THRESHOLD ⇒ d = 0
+  THEN
+    dose_request := d
+    dc_state     := DC_DONE
+  END
+
+  DC_ForwardToMonitor
+  WHERE
+    grd1: dc_state = DC_DONE
+    grd2: sm_state = SM_MONITORING
+  THEN
+    dc_state := DC_WAITING
+    sm_state := SM_CHECKING
+  END
+
+  SM_ApproveDose
+  WHERE
+    grd1: sm_state        = SM_CHECKING
+    grd2: dose_request    ≤ MAX_SAFE_DOSE
+    grd3: glucose_reading ≥ HYPO_THRESHOLD   /* monitor checks reported value — not actual */
+    grd4: battery_level   ≥ MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_APPROVED
+    command_approved := TRUE
+    dose_command     := dose_request
+  END
+
+  SM_RejectDose
+  WHERE
+    grd1: sm_state = SM_CHECKING
+    grd2: dose_request > MAX_SAFE_DOSE ∨
+          glucose_reading < HYPO_THRESHOLD ∨
+          battery_level < MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_REJECTED
+    command_approved := FALSE
+  END
+
+  SM_ResetAfterApproval
+  WHERE
+    grd1: sm_state = SM_APPROVED
+    grd2: pa_state = PA_PRIMING
+  THEN
+    sm_state := SM_MONITORING
+  END
+
+  SM_ResetAfterRejection
+  WHERE
+    grd1: sm_state = SM_REJECTED
+  THEN
+    sm_state     := SM_MONITORING
+    dose_request := 0
+  END
+
+  PA_PrimePump
+  WHERE
+    grd1: pa_state         = PA_IDLE
+    grd2: sm_state         = SM_APPROVED
+    grd3: command_approved = TRUE
+  THEN
+    pa_state := PA_PRIMING
+  END
+
+  PA_DeliverDose
+  WHERE
+    grd1: pa_state         = PA_PRIMING
+    grd2: command_approved = TRUE
+    grd3: dose_command     ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading  ≥ HYPO_THRESHOLD   /* uses reported value — spoofable */
+    grd5: battery_level    ≥ MIN_BATTERY_LEVEL
+  THEN
+    delivered_dose := dose_command
+    pa_state       := PA_DELIVERING
+    battery_level  := battery_level - 1
+    /* PROOF OBLIGATION FAILURE:
+       After ATK_SpoofGlucoseReading set glucose_reading := spoofed_val
+       and actual_glucose < HYPO_THRESHOLD,
+       inv_s2: delivered_dose > 0 ⇒ actual_glucose ≥ HYPO_THRESHOLD
+       is NOT provable here. Rodin reports this PO as unproved. */
+  END
+
+  PA_CompleteDelivery
+  WHERE grd1: pa_state = PA_DELIVERING
+  THEN  pa_state := PA_DONE
+  END
+
+  PA_Reset
+  WHERE grd1: pa_state = PA_DONE
+  THEN
+    pa_state         := PA_IDLE
+    delivered_dose   := 0
+    command_approved := FALSE
+    dose_command     := 0
+  END
+
+  NI_ReceivePacket
+  WHERE grd1: ni_state = NI_IDLE
+  THEN  ni_state := NI_RECEIVING
+  END
+
+  NI_ProcessPacket
+  WHERE grd1: ni_state = NI_RECEIVING
+  THEN  ni_state := NI_TRANSMITTING
+  END
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     ATTACK EVENT A: Sensor Spoofing
+     ═══════════════════════════════════════════════════════════════════════
+     Attacker replaces glucose_reading with a high value while actual_glucose
+     is below HYPO_THRESHOLD.
+
+     This creates the post-state:
+       glucose_reading > HYPER_THRESHOLD    (system believes glucose is high)
+       actual_glucose  < HYPO_THRESHOLD     (patient is actually hypoglycaemic)
+
+     Consequence: SM_ApproveDose fires (grd3 satisfied by spoofed reading),
+     PA_DeliverDose fires, delivered_dose := dose_command > 0.
+
+     Proof obligation for inv_s2 (using actual_glucose) FAILS:
+       delivered_dose > 0 ∧ actual_glucose < HYPO_THRESHOLD — contradiction.
+     ═══════════════════════════════════════════════════════════════════════ */
+  ATK_SpoofGlucoseReading
+  ANY spoofed_val
+  WHERE
+    grd1: spoofed_val    ∈ ℕ
+    grd2: spoofed_val    > HYPER_THRESHOLD
+    grd3: actual_glucose < HYPO_THRESHOLD
+    grd4: ni_state       = NI_TRANSMITTING
+  THEN
+    glucose_reading := spoofed_val
+    ni_state        := NI_IDLE
+  END
+
+END

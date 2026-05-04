@@ -1,0 +1,263 @@
+/* =========================================================================
+   Event-B Machine: Attack_Replay
+   Attack Scenario C: Replay Attack
+
+   An attacker captures a legitimate high-dose delivery command from a previous
+   session and replays it. The replayed dose may exceed MAX_SAFE_DOSE.
+
+   HAZOP classification:
+     Flow: NetworkInterface → DoseCalculator (ExternalCmd)
+     Guide word: OTHER THAN (stale, out-of-context command replayed)
+     Deviation: old command with different (excessive) dose re-delivered
+
+   VIOLATED INVARIANT:
+     INV1: delivered_dose ≤ MAX_SAFE_DOSE
+     — After ATK_ReplayHighDoseCommand fires with replayed_dose > MAX_SAFE_DOSE,
+        the invariant is violated. Proof obligation FAILS.
+
+   Replay protection model:
+     We introduce sequence_num ∈ ℕ to represent the current session's command
+     counter. A legitimate command increments it. The replay attack uses a
+     command with an old (lower) sequence number — the system has no mechanism
+     to detect this in the attack model (the check is absent), showing the
+     structural vulnerability.
+
+   Proof result in Rodin:
+     inv_s1: UNPROVABLE — attacker induces overdose via replayed command.
+     All other invariants: provable in normal events.
+   ========================================================================= */
+
+MACHINE Attack_Replay
+SEES InsulinPump_Ctx
+
+VARIABLES
+  gs_state
+  dc_state
+  sm_state
+  pa_state
+  ni_state
+  glucose_reading
+  dose_request
+  dose_command
+  battery_level
+  command_approved
+  delivered_dose
+  sequence_num        /* current session command counter (replay protection) */
+
+INVARIANTS
+  inv_t1:  gs_state        ∈ GS_STATE
+  inv_t2:  dc_state        ∈ DC_STATE
+  inv_t3:  sm_state        ∈ SM_STATE
+  inv_t4:  pa_state        ∈ PA_STATE
+  inv_t5:  ni_state        ∈ NI_STATE
+  inv_t6:  glucose_reading ∈ ℕ
+  inv_t7:  dose_request    ∈ ℕ
+  inv_t8:  dose_command    ∈ ℕ
+  inv_t9:  battery_level   ∈ 0‥100
+  inv_t10: command_approved ∈ BOOL
+  inv_t11: delivered_dose  ∈ ℕ
+  inv_t12: sequence_num    ∈ ℕ
+
+  /* INV1 — VIOLATED by ATK_ReplayHighDoseCommand when replayed_dose > MAX_SAFE_DOSE.
+     Proof obligation cannot be discharged after the attack event fires. */
+  inv_s1: delivered_dose ≤ MAX_SAFE_DOSE
+
+  inv_s2: delivered_dose > 0 ⇒ glucose_reading ≥ HYPO_THRESHOLD
+  inv_s3: delivered_dose > 0 ⇒ battery_level   ≥ MIN_BATTERY_LEVEL
+  inv_s4: delivered_dose > 0 ⇒ command_approved = TRUE
+  inv_s5: dose_request    ≤ MAX_SAFE_DOSE
+
+EVENTS
+
+  INITIALISATION
+  BEGIN
+    gs_state         := GS_IDLE
+    dc_state         := DC_WAITING
+    sm_state         := SM_MONITORING
+    pa_state         := PA_IDLE
+    ni_state         := NI_IDLE
+    glucose_reading  := 0
+    dose_request     := 0
+    dose_command     := 0
+    battery_level    := 100
+    command_approved := FALSE
+    delivered_dose   := 0
+    sequence_num     := 0
+  END
+
+  /* Normal events */
+
+  GS_StartMeasurement
+  WHERE
+    grd1: gs_state      = GS_IDLE
+    grd2: battery_level ≥ MIN_BATTERY_LEVEL
+  THEN  gs_state := GS_MEASURING
+  END
+
+  GS_MeasurementReady
+  ANY g
+  WHERE
+    grd1: gs_state = GS_MEASURING
+    grd2: g        ∈ ℕ
+  THEN
+    glucose_reading := g
+    gs_state        := GS_TRANSMITTING
+  END
+
+  GS_TransmitReading
+  WHERE
+    grd1: gs_state = GS_TRANSMITTING
+    grd2: dc_state = DC_WAITING
+  THEN
+    gs_state := GS_IDLE
+    dc_state := DC_COMPUTING
+  END
+
+  DC_ComputeDose
+  ANY d
+  WHERE
+    grd1: dc_state        = DC_COMPUTING
+    grd2: d               ∈ ℕ
+    grd3: d               ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading < HYPO_THRESHOLD ⇒ d = 0
+  THEN
+    dose_request := d
+    dc_state     := DC_DONE
+  END
+
+  DC_ForwardToMonitor
+  WHERE
+    grd1: dc_state = DC_DONE
+    grd2: sm_state = SM_MONITORING
+  THEN
+    dc_state := DC_WAITING
+    sm_state := SM_CHECKING
+  END
+
+  SM_ApproveDose
+  WHERE
+    grd1: sm_state        = SM_CHECKING
+    grd2: dose_request    ≤ MAX_SAFE_DOSE
+    grd3: glucose_reading ≥ HYPO_THRESHOLD
+    grd4: battery_level   ≥ MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_APPROVED
+    command_approved := TRUE
+    dose_command     := dose_request
+    sequence_num     := sequence_num + 1   /* increment command counter on legitimate approval */
+  END
+
+  SM_RejectDose
+  WHERE
+    grd1: sm_state = SM_CHECKING
+    grd2: dose_request > MAX_SAFE_DOSE ∨
+          glucose_reading < HYPO_THRESHOLD ∨
+          battery_level < MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_REJECTED
+    command_approved := FALSE
+  END
+
+  SM_ResetAfterApproval
+  WHERE
+    grd1: sm_state = SM_APPROVED
+    grd2: pa_state = PA_PRIMING
+  THEN  sm_state := SM_MONITORING
+  END
+
+  SM_ResetAfterRejection
+  WHERE grd1: sm_state = SM_REJECTED
+  THEN
+    sm_state     := SM_MONITORING
+    dose_request := 0
+  END
+
+  PA_PrimePump
+  WHERE
+    grd1: pa_state         = PA_IDLE
+    grd2: sm_state         = SM_APPROVED
+    grd3: command_approved = TRUE
+  THEN  pa_state := PA_PRIMING
+  END
+
+  PA_DeliverDose
+  WHERE
+    grd1: pa_state         = PA_PRIMING
+    grd2: command_approved = TRUE
+    grd3: dose_command     ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading  ≥ HYPO_THRESHOLD
+    grd5: battery_level    ≥ MIN_BATTERY_LEVEL
+  THEN
+    delivered_dose := dose_command
+    pa_state       := PA_DELIVERING
+    battery_level  := battery_level - 1
+  END
+
+  PA_CompleteDelivery
+  WHERE grd1: pa_state = PA_DELIVERING
+  THEN  pa_state := PA_DONE
+  END
+
+  PA_Reset
+  WHERE grd1: pa_state = PA_DONE
+  THEN
+    pa_state         := PA_IDLE
+    delivered_dose   := 0
+    command_approved := FALSE
+    dose_command     := 0
+  END
+
+  NI_ReceivePacket
+  WHERE grd1: ni_state = NI_IDLE
+  THEN  ni_state := NI_RECEIVING
+  END
+
+  NI_ProcessPacket
+  WHERE grd1: ni_state = NI_RECEIVING
+  THEN  ni_state := NI_TRANSMITTING
+  END
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     ATTACK EVENT C: Replay Attack
+     ═══════════════════════════════════════════════════════════════════════
+     Attacker replays a captured old command with a high dose.
+     The system has no sequence number validation on the network path,
+     so the replayed command is accepted.
+
+     The attack fires when:
+       - ni_state = NI_TRANSMITTING  (attacker has network access)
+       - replayed_dose > MAX_SAFE_DOSE  (old command from high-glucose session)
+
+     Post-state after this event:
+       delivered_dose = replayed_dose > MAX_SAFE_DOSE
+
+     Proof obligation for inv_s1:
+       delivered_dose ≤ MAX_SAFE_DOSE
+       → FALSE (replayed_dose > MAX_SAFE_DOSE)
+       → Rodin proof obligation UNPROVED
+
+     Structural fix (not implemented here, shown as commentary):
+       Add guard: grd_seqcheck: cmd_sequence_num = sequence_num
+       This would prevent replay by requiring the command to carry
+       the current session's sequence number.
+     ═══════════════════════════════════════════════════════════════════════ */
+  ATK_ReplayHighDoseCommand
+  ANY replayed_dose
+  WHERE
+    grd1: replayed_dose ∈ ℕ
+    grd2: replayed_dose > MAX_SAFE_DOSE   /* replayed command from old high-dose session */
+    grd3: ni_state      = NI_TRANSMITTING
+    /* MISSING guard (vulnerability): no check that replayed_dose's
+       sequence number matches current sequence_num.
+       A correctly implemented system would have:
+         grd_missing: cmd_seq = sequence_num
+       Without this guard, any old command is accepted. */
+  THEN
+    delivered_dose := replayed_dose
+    ni_state       := NI_IDLE
+    /* INV1 proof obligation FAILS:
+       delivered_dose = replayed_dose > MAX_SAFE_DOSE
+       contradicts delivered_dose ≤ MAX_SAFE_DOSE */
+  END
+
+END

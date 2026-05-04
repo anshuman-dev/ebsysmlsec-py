@@ -1,0 +1,244 @@
+/* =========================================================================
+   Event-B Machine: Attack_Injection
+   Attack Scenario B: Command Injection
+
+   An attacker sends a delivery command directly to the PumpActuator via the
+   NetworkInterface, bypassing the SafetyMonitor entirely.
+   command_approved remains FALSE; delivered_dose is set directly.
+
+   HAZOP classification:
+     Flow: NetworkInterface → DoseCalculator (ExternalCmd)
+     Guide word: AS WELL AS (extra unauthorised command alongside legitimate traffic)
+     Deviation: delivery command arrives without going through the approval pipeline
+
+   VIOLATED INVARIANT:
+     INV4: delivered_dose > 0 ⇒ command_approved = TRUE
+     — After ATK_InjectDeliveryCommand fires, delivered_dose > 0
+        but command_approved = FALSE. Proof obligation FAILS.
+
+   Proof result in Rodin:
+     inv_s4: UNPROVABLE — attacker bypasses authorisation gate.
+     All other invariants: provable in normal events.
+   ========================================================================= */
+
+MACHINE Attack_Injection
+SEES InsulinPump_Ctx
+
+VARIABLES
+  gs_state
+  dc_state
+  sm_state
+  pa_state
+  ni_state
+  glucose_reading
+  dose_request
+  dose_command
+  battery_level
+  command_approved
+  delivered_dose
+
+INVARIANTS
+  inv_t1:  gs_state        ∈ GS_STATE
+  inv_t2:  dc_state        ∈ DC_STATE
+  inv_t3:  sm_state        ∈ SM_STATE
+  inv_t4:  pa_state        ∈ PA_STATE
+  inv_t5:  ni_state        ∈ NI_STATE
+  inv_t6:  glucose_reading ∈ ℕ
+  inv_t7:  dose_request    ∈ ℕ
+  inv_t8:  dose_command    ∈ ℕ
+  inv_t9:  battery_level   ∈ 0‥100
+  inv_t10: command_approved ∈ BOOL
+  inv_t11: delivered_dose  ∈ ℕ
+
+  inv_s1: delivered_dose ≤ MAX_SAFE_DOSE
+  inv_s2: delivered_dose > 0 ⇒ glucose_reading ≥ HYPO_THRESHOLD
+  inv_s3: delivered_dose > 0 ⇒ battery_level   ≥ MIN_BATTERY_LEVEL
+
+  /* INV4 — VIOLATED by ATK_InjectDeliveryCommand.
+     Proof obligation: after the attack event, delivered_dose > 0 but
+     command_approved = FALSE. Rodin cannot discharge this PO. */
+  inv_s4: delivered_dose > 0 ⇒ command_approved = TRUE
+
+  inv_s5: dose_request ≤ MAX_SAFE_DOSE
+
+EVENTS
+
+  INITIALISATION
+  BEGIN
+    gs_state         := GS_IDLE
+    dc_state         := DC_WAITING
+    sm_state         := SM_MONITORING
+    pa_state         := PA_IDLE
+    ni_state         := NI_IDLE
+    glucose_reading  := 0
+    dose_request     := 0
+    dose_command     := 0
+    battery_level    := 100
+    command_approved := FALSE
+    delivered_dose   := 0
+  END
+
+  /* Normal events (unchanged from InsulinPump.bum) */
+
+  GS_StartMeasurement
+  WHERE
+    grd1: gs_state      = GS_IDLE
+    grd2: battery_level ≥ MIN_BATTERY_LEVEL
+  THEN  gs_state := GS_MEASURING
+  END
+
+  GS_MeasurementReady
+  ANY g
+  WHERE
+    grd1: gs_state = GS_MEASURING
+    grd2: g        ∈ ℕ
+  THEN
+    glucose_reading := g
+    gs_state        := GS_TRANSMITTING
+  END
+
+  GS_TransmitReading
+  WHERE
+    grd1: gs_state = GS_TRANSMITTING
+    grd2: dc_state = DC_WAITING
+  THEN
+    gs_state := GS_IDLE
+    dc_state := DC_COMPUTING
+  END
+
+  DC_ComputeDose
+  ANY d
+  WHERE
+    grd1: dc_state        = DC_COMPUTING
+    grd2: d               ∈ ℕ
+    grd3: d               ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading < HYPO_THRESHOLD ⇒ d = 0
+  THEN
+    dose_request := d
+    dc_state     := DC_DONE
+  END
+
+  DC_ForwardToMonitor
+  WHERE
+    grd1: dc_state = DC_DONE
+    grd2: sm_state = SM_MONITORING
+  THEN
+    dc_state := DC_WAITING
+    sm_state := SM_CHECKING
+  END
+
+  SM_ApproveDose
+  WHERE
+    grd1: sm_state        = SM_CHECKING
+    grd2: dose_request    ≤ MAX_SAFE_DOSE
+    grd3: glucose_reading ≥ HYPO_THRESHOLD
+    grd4: battery_level   ≥ MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_APPROVED
+    command_approved := TRUE
+    dose_command     := dose_request
+  END
+
+  SM_RejectDose
+  WHERE
+    grd1: sm_state = SM_CHECKING
+    grd2: dose_request > MAX_SAFE_DOSE ∨
+          glucose_reading < HYPO_THRESHOLD ∨
+          battery_level < MIN_BATTERY_LEVEL
+  THEN
+    sm_state         := SM_REJECTED
+    command_approved := FALSE
+  END
+
+  SM_ResetAfterApproval
+  WHERE
+    grd1: sm_state = SM_APPROVED
+    grd2: pa_state = PA_PRIMING
+  THEN  sm_state := SM_MONITORING
+  END
+
+  SM_ResetAfterRejection
+  WHERE grd1: sm_state = SM_REJECTED
+  THEN
+    sm_state     := SM_MONITORING
+    dose_request := 0
+  END
+
+  PA_PrimePump
+  WHERE
+    grd1: pa_state         = PA_IDLE
+    grd2: sm_state         = SM_APPROVED
+    grd3: command_approved = TRUE
+  THEN  pa_state := PA_PRIMING
+  END
+
+  PA_DeliverDose
+  WHERE
+    grd1: pa_state         = PA_PRIMING
+    grd2: command_approved = TRUE
+    grd3: dose_command     ≤ MAX_SAFE_DOSE
+    grd4: glucose_reading  ≥ HYPO_THRESHOLD
+    grd5: battery_level    ≥ MIN_BATTERY_LEVEL
+  THEN
+    delivered_dose := dose_command
+    pa_state       := PA_DELIVERING
+    battery_level  := battery_level - 1
+  END
+
+  PA_CompleteDelivery
+  WHERE grd1: pa_state = PA_DELIVERING
+  THEN  pa_state := PA_DONE
+  END
+
+  PA_Reset
+  WHERE grd1: pa_state = PA_DONE
+  THEN
+    pa_state         := PA_IDLE
+    delivered_dose   := 0
+    command_approved := FALSE
+    dose_command     := 0
+  END
+
+  NI_ReceivePacket
+  WHERE grd1: ni_state = NI_IDLE
+  THEN  ni_state := NI_RECEIVING
+  END
+
+  NI_ProcessPacket
+  WHERE grd1: ni_state = NI_RECEIVING
+  THEN  ni_state := NI_TRANSMITTING
+  END
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     ATTACK EVENT B: Command Injection
+     ═══════════════════════════════════════════════════════════════════════
+     Attacker sends a delivery command directly to PumpActuator.
+     The SafetyMonitor pipeline is never triggered.
+     command_approved remains FALSE throughout.
+
+     Post-state after this event:
+       delivered_dose > 0
+       command_approved = FALSE
+
+     Proof obligation for inv_s4:
+       delivered_dose > 0 ⇒ command_approved = TRUE
+       → FALSE (command_approved = FALSE after attack)
+       → Rodin proof obligation UNPROVED
+     ═══════════════════════════════════════════════════════════════════════ */
+  ATK_InjectDeliveryCommand
+  ANY injected_dose
+  WHERE
+    grd1: injected_dose    ∈ ℕ
+    grd2: injected_dose    > 0
+    grd3: ni_state         = NI_TRANSMITTING
+    grd4: command_approved = FALSE   /* safety monitor has NOT authorised */
+    /* NOTE: no guard on sm_state — attack bypasses the monitor state machine */
+  THEN
+    delivered_dose := injected_dose
+    ni_state       := NI_IDLE
+    /* command_approved is intentionally NOT set to TRUE.
+       This is the attack: delivery without authorisation.
+       INV4 proof obligation FAILS here. */
+  END
+
+END

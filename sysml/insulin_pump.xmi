@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SysML/XMI model of the Autonomous Insulin Pump Controller
+  Style: NCS (Networked Control System) — following Poorhadi & Troubitsyna (2022, 2023, 2024)
+  Tool: hand-crafted for use with the Python EBSysMLSec-Py translator
+
+  Namespaces:
+    uml   — Eclipse UML2 5.0 (same as Papyrus)
+    sysml — SysML 1.1 (Papyrus profile)
+    safe  — custom safety profile (AttackSurface, SafetyRequirement)
+-->
+<xmi:XMI xmi:version="20131001"
+    xmlns:xmi="http://www.omg.org/spec/XMI/20131001"
+    xmlns:uml="http://www.eclipse.org/uml2/5.0.0/UML"
+    xmlns:sysml="http://www.eclipse.org/papyrus/sysml/1.1/SysML"
+    xmlns:safe="http://insulin-pump-formal/safety/1.0">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       MODEL ROOT
+       ═══════════════════════════════════════════════════════════════ -->
+  <uml:Model xmi:id="_model" name="InsulinPumpSystem">
+    <packagedElement xmi:type="uml:Package" xmi:id="_pkg" name="InsulinPump">
+
+      <!-- ─── Primitive types ─── -->
+      <packagedElement xmi:type="uml:PrimitiveType" xmi:id="_NatType"  name="NAT"/>
+      <packagedElement xmi:type="uml:PrimitiveType" xmi:id="_BoolType" name="BOOL"/>
+
+      <!-- ─── Signal / data types flowing across ports ─── -->
+      <packagedElement xmi:type="uml:Signal" xmi:id="_GlucoseReading" name="GlucoseReading"/>
+      <packagedElement xmi:type="uml:Signal" xmi:id="_DoseRequest"    name="DoseRequest"/>
+      <packagedElement xmi:type="uml:Signal" xmi:id="_DoseCommand"    name="DoseCommand"/>
+      <packagedElement xmi:type="uml:Signal" xmi:id="_PatientParams"  name="PatientParams"/>
+      <packagedElement xmi:type="uml:Signal" xmi:id="_ExternalCmd"    name="ExternalCmd"/>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 1 — GlucoseSensor
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_GlucoseSensor" name="GlucoseSensor">
+
+        <!-- Value properties -->
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_gs_battery"
+                        name="battery_level" type="_NatType"/>
+
+        <!-- Flow port: out — glucose reading to DoseCalculator -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_gs_glucose_out"
+                   name="glucose_out" type="_GlucoseReading"/>
+
+        <!-- State machine -->
+        <ownedBehavior xmi:type="uml:StateMachine" xmi:id="_gs_sm" name="GlucoseSensorSM">
+          <region xmi:type="uml:Region" xmi:id="_gs_region" name="main">
+            <subvertex xmi:type="uml:Pseudostate" xmi:id="_gs_init"
+                       kind="initial" name="init"/>
+            <subvertex xmi:type="uml:State" xmi:id="_gs_IDLE"         name="IDLE"/>
+            <subvertex xmi:type="uml:State" xmi:id="_gs_MEASURING"    name="MEASURING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_gs_TRANSMITTING" name="TRANSMITTING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_gs_ERROR"        name="ERROR"/>
+            <transition source="_gs_init"         target="_gs_IDLE"         name="Initialize"/>
+            <transition source="_gs_IDLE"         target="_gs_MEASURING"    name="StartMeasurement"/>
+            <transition source="_gs_MEASURING"    target="_gs_TRANSMITTING" name="MeasurementReady"/>
+            <transition source="_gs_TRANSMITTING" target="_gs_IDLE"         name="TransmitDone"/>
+            <transition source="_gs_MEASURING"    target="_gs_ERROR"        name="SensorFault"/>
+            <transition source="_gs_ERROR"        target="_gs_IDLE"         name="Reset"/>
+          </region>
+        </ownedBehavior>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 2 — DoseCalculator
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_DoseCalculator"
+                       name="DoseCalculator" isAttackSurface="true">
+
+        <!-- Flow ports -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_dc_glucose_in"
+                   name="glucose_in" type="_GlucoseReading"/>
+        <ownedPort xmi:type="uml:Port" xmi:id="_dc_params_in"
+                   name="params_in" type="_PatientParams"/>
+        <ownedPort xmi:type="uml:Port" xmi:id="_dc_inject_in"
+                   name="inject_in" type="_ExternalCmd"/>
+        <ownedPort xmi:type="uml:Port" xmi:id="_dc_dose_out"
+                   name="dose_out" type="_DoseRequest"/>
+
+        <!-- State machine -->
+        <ownedBehavior xmi:type="uml:StateMachine" xmi:id="_dc_sm" name="DoseCalculatorSM">
+          <region xmi:type="uml:Region" xmi:id="_dc_region" name="main">
+            <subvertex xmi:type="uml:Pseudostate" xmi:id="_dc_init" kind="initial" name="init"/>
+            <subvertex xmi:type="uml:State" xmi:id="_dc_WAITING"   name="WAITING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_dc_COMPUTING" name="COMPUTING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_dc_DONE"      name="DONE"/>
+            <subvertex xmi:type="uml:State" xmi:id="_dc_ERROR"     name="ERROR"/>
+            <transition source="_dc_init"      target="_dc_WAITING"   name="Initialize"/>
+            <transition source="_dc_WAITING"   target="_dc_COMPUTING" name="StartComputation"/>
+            <transition source="_dc_COMPUTING" target="_dc_DONE"      name="ComputationReady"/>
+            <transition source="_dc_DONE"      target="_dc_WAITING"   name="Reset"/>
+            <transition source="_dc_COMPUTING" target="_dc_ERROR"     name="ComputationError"/>
+            <transition source="_dc_ERROR"     target="_dc_WAITING"   name="Reset"/>
+          </region>
+        </ownedBehavior>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 3 — SafetyMonitor
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_SafetyMonitor" name="SafetyMonitor">
+
+        <!-- Value properties -->
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_sm_override"
+                        name="override_active" type="_BoolType"/>
+
+        <!-- Flow ports -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_sm_dose_in"
+                   name="dose_in" type="_DoseRequest"/>
+        <ownedPort xmi:type="uml:Port" xmi:id="_sm_command_out"
+                   name="command_out" type="_DoseCommand"/>
+
+        <!-- State machine -->
+        <ownedBehavior xmi:type="uml:StateMachine" xmi:id="_sm_sm" name="SafetyMonitorSM">
+          <region xmi:type="uml:Region" xmi:id="_sm_region" name="main">
+            <subvertex xmi:type="uml:Pseudostate" xmi:id="_sm_init" kind="initial" name="init"/>
+            <subvertex xmi:type="uml:State" xmi:id="_sm_MONITORING" name="MONITORING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_sm_CHECKING"   name="CHECKING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_sm_APPROVED"   name="APPROVED"/>
+            <subvertex xmi:type="uml:State" xmi:id="_sm_REJECTED"   name="REJECTED"/>
+            <transition source="_sm_init"       target="_sm_MONITORING" name="Initialize"/>
+            <transition source="_sm_MONITORING" target="_sm_CHECKING"   name="DoseRequestReceived"/>
+            <transition source="_sm_CHECKING"   target="_sm_APPROVED"   name="ApproveDelivery"/>
+            <transition source="_sm_CHECKING"   target="_sm_REJECTED"   name="RejectDelivery"/>
+            <transition source="_sm_APPROVED"   target="_sm_MONITORING" name="CommandSent"/>
+            <transition source="_sm_REJECTED"   target="_sm_MONITORING" name="RejectionSent"/>
+          </region>
+        </ownedBehavior>
+
+        <!-- Safety requirements on this component -->
+        <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv4"
+                   name="INV4"
+                   constraintType="safetyInvariant"
+                   formalText="delivered_dose &gt; 0 ⇒ monitor_state = MON_APPROVED"/>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 4 — PumpActuator
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_PumpActuator" name="PumpActuator">
+
+        <!-- Flow port -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_pa_command_in"
+                   name="command_in" type="_DoseCommand"/>
+
+        <!-- State machine -->
+        <ownedBehavior xmi:type="uml:StateMachine" xmi:id="_pa_sm" name="PumpActuatorSM">
+          <region xmi:type="uml:Region" xmi:id="_pa_region" name="main">
+            <subvertex xmi:type="uml:Pseudostate" xmi:id="_pa_init" kind="initial" name="init"/>
+            <subvertex xmi:type="uml:State" xmi:id="_pa_IDLE"       name="IDLE"/>
+            <subvertex xmi:type="uml:State" xmi:id="_pa_PRIMING"    name="PRIMING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_pa_DELIVERING" name="DELIVERING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_pa_DONE"       name="DONE"/>
+            <transition source="_pa_init"       target="_pa_IDLE"       name="Initialize"/>
+            <transition source="_pa_IDLE"       target="_pa_PRIMING"    name="CommandReceived"/>
+            <transition source="_pa_PRIMING"    target="_pa_DELIVERING" name="PrimingComplete"/>
+            <transition source="_pa_DELIVERING" target="_pa_DONE"       name="DeliveryComplete"/>
+            <transition source="_pa_DONE"       target="_pa_IDLE"       name="Reset"/>
+          </region>
+        </ownedBehavior>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 5 — NetworkInterface   <<AttackSurface>>
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_NetworkInterface"
+                       name="NetworkInterface" isAttackSurface="true">
+
+        <!-- Flow ports -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_ni_external_in"
+                   name="external_in" type="_ExternalCmd"/>
+        <ownedPort xmi:type="uml:Port" xmi:id="_ni_inject_out"
+                   name="inject_out" type="_ExternalCmd"/>
+
+        <!-- State machine -->
+        <ownedBehavior xmi:type="uml:StateMachine" xmi:id="_ni_sm" name="NetworkInterfaceSM">
+          <region xmi:type="uml:Region" xmi:id="_ni_region" name="main">
+            <subvertex xmi:type="uml:Pseudostate" xmi:id="_ni_init" kind="initial" name="init"/>
+            <subvertex xmi:type="uml:State" xmi:id="_ni_IDLE"         name="IDLE"/>
+            <subvertex xmi:type="uml:State" xmi:id="_ni_RECEIVING"    name="RECEIVING"/>
+            <subvertex xmi:type="uml:State" xmi:id="_ni_TRANSMITTING" name="TRANSMITTING"/>
+            <transition source="_ni_init"         target="_ni_IDLE"         name="Initialize"/>
+            <transition source="_ni_IDLE"         target="_ni_RECEIVING"    name="PacketArrived"/>
+            <transition source="_ni_RECEIVING"    target="_ni_TRANSMITTING" name="PacketProcessed"/>
+            <transition source="_ni_TRANSMITTING" target="_ni_IDLE"         name="PacketForwarded"/>
+          </region>
+        </ownedBehavior>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           BLOCK 6 — PatientProfile
+           ═══════════════════════════════════════════════════════════ -->
+      <packagedElement xmi:type="uml:Class" xmi:id="_PatientProfile" name="PatientProfile">
+
+        <!-- Value properties — these become Event-B constants -->
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_pp_max_dose"
+                        name="max_safe_dose" type="_NatType"
+                        isConstant="true" defaultValue="50"/>
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_pp_hypo"
+                        name="hypo_threshold" type="_NatType"
+                        isConstant="true" defaultValue="70"/>
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_pp_hyper"
+                        name="hyper_threshold" type="_NatType"
+                        isConstant="true" defaultValue="180"/>
+        <ownedAttribute xmi:type="uml:Property" xmi:id="_pp_min_bat"
+                        name="min_battery_level" type="_NatType"
+                        isConstant="true" defaultValue="10"/>
+
+        <!-- Flow port -->
+        <ownedPort xmi:type="uml:Port" xmi:id="_pp_params_out"
+                   name="params_out" type="_PatientParams"/>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           INFORMATION FLOWS  (IBD-level connections)
+           ═══════════════════════════════════════════════════════════ -->
+
+      <!-- F1: GlucoseSensor → DoseCalculator (normal glucose data) -->
+      <packagedElement xmi:type="uml:InformationFlow" xmi:id="_flow_F1"
+                       name="GlucoseDataFlow"
+                       flowType="normal">
+        <informationSource xmi:idref="_GlucoseSensor"/>
+        <informationTarget xmi:idref="_DoseCalculator"/>
+        <conveyed xmi:idref="_GlucoseReading"/>
+        <realizingConnector sourcePort="_gs_glucose_out" targetPort="_dc_glucose_in"/>
+      </packagedElement>
+
+      <!-- F2: PatientProfile → DoseCalculator (patient parameters) -->
+      <packagedElement xmi:type="uml:InformationFlow" xmi:id="_flow_F2"
+                       name="PatientParamsFlow"
+                       flowType="normal">
+        <informationSource xmi:idref="_PatientProfile"/>
+        <informationTarget xmi:idref="_DoseCalculator"/>
+        <conveyed xmi:idref="_PatientParams"/>
+        <realizingConnector sourcePort="_pp_params_out" targetPort="_dc_params_in"/>
+      </packagedElement>
+
+      <!-- F3: DoseCalculator → SafetyMonitor (dose request) -->
+      <packagedElement xmi:type="uml:InformationFlow" xmi:id="_flow_F3"
+                       name="DoseRequestFlow"
+                       flowType="normal">
+        <informationSource xmi:idref="_DoseCalculator"/>
+        <informationTarget xmi:idref="_SafetyMonitor"/>
+        <conveyed xmi:idref="_DoseRequest"/>
+        <realizingConnector sourcePort="_dc_dose_out" targetPort="_sm_dose_in"/>
+      </packagedElement>
+
+      <!-- F4: SafetyMonitor → PumpActuator (approved dose command) -->
+      <packagedElement xmi:type="uml:InformationFlow" xmi:id="_flow_F4"
+                       name="DoseCommandFlow"
+                       flowType="normal">
+        <informationSource xmi:idref="_SafetyMonitor"/>
+        <informationTarget xmi:idref="_PumpActuator"/>
+        <conveyed xmi:idref="_DoseCommand"/>
+        <realizingConnector sourcePort="_sm_command_out" targetPort="_pa_command_in"/>
+      </packagedElement>
+
+      <!-- F5: NetworkInterface → DoseCalculator (ATTACK SURFACE — injected commands) -->
+      <packagedElement xmi:type="uml:InformationFlow" xmi:id="_flow_F5"
+                       name="NetworkInjectionFlow"
+                       flowType="attack">
+        <informationSource xmi:idref="_NetworkInterface"/>
+        <informationTarget xmi:idref="_DoseCalculator"/>
+        <conveyed xmi:idref="_ExternalCmd"/>
+        <realizingConnector sourcePort="_ni_inject_out" targetPort="_dc_inject_in"/>
+      </packagedElement>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           SYSTEM-LEVEL SAFETY REQUIREMENTS
+           ═══════════════════════════════════════════════════════════ -->
+      <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv1"
+                 name="INV1" constraintType="safetyInvariant"
+                 formalText="delivered_dose ≤ MAX_SAFE_DOSE"/>
+      <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv2"
+                 name="INV2" constraintType="safetyInvariant"
+                 formalText="delivered_dose &gt; 0 ⇒ glucose_reading ≥ HYPO_THRESHOLD"/>
+      <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv3"
+                 name="INV3" constraintType="safetyInvariant"
+                 formalText="delivered_dose &gt; 0 ⇒ battery_level ≥ MIN_BATTERY_LEVEL"/>
+      <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv4_sys"
+                 name="INV4" constraintType="safetyInvariant"
+                 formalText="delivered_dose &gt; 0 ⇒ monitor_state = MON_APPROVED"/>
+      <ownedRule xmi:type="uml:Constraint" xmi:id="_sr_inv5"
+                 name="INV5" constraintType="safetyInvariant"
+                 formalText="requested_dose ≤ MAX_SAFE_DOSE"/>
+
+    </packagedElement>
+  </uml:Model>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SYSML STEREOTYPE APPLICATIONS
+       ═══════════════════════════════════════════════════════════════ -->
+  <sysml:Block xmi:id="_st_GlucoseSensor"   base_Class="_GlucoseSensor"/>
+  <sysml:Block xmi:id="_st_DoseCalculator"  base_Class="_DoseCalculator"/>
+  <sysml:Block xmi:id="_st_SafetyMonitor"   base_Class="_SafetyMonitor"/>
+  <sysml:Block xmi:id="_st_PumpActuator"    base_Class="_PumpActuator"/>
+  <sysml:Block xmi:id="_st_NetworkInterface" base_Class="_NetworkInterface"/>
+  <sysml:Block xmi:id="_st_PatientProfile"  base_Class="_PatientProfile"/>
+
+  <sysml:FlowPort xmi:id="_fp_gs_out"     base_Port="_gs_glucose_out"  direction="out"/>
+  <sysml:FlowPort xmi:id="_fp_dc_gin"     base_Port="_dc_glucose_in"   direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_dc_pin"     base_Port="_dc_params_in"    direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_dc_inj"     base_Port="_dc_inject_in"    direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_dc_out"     base_Port="_dc_dose_out"     direction="out"/>
+  <sysml:FlowPort xmi:id="_fp_sm_in"      base_Port="_sm_dose_in"      direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_sm_out"     base_Port="_sm_command_out"  direction="out"/>
+  <sysml:FlowPort xmi:id="_fp_pa_in"      base_Port="_pa_command_in"   direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_ni_in"      base_Port="_ni_external_in"  direction="in"/>
+  <sysml:FlowPort xmi:id="_fp_ni_out"     base_Port="_ni_inject_out"   direction="out"/>
+  <sysml:FlowPort xmi:id="_fp_pp_out"     base_Port="_pp_params_out"   direction="out"/>
+
+  <!-- Attack surface markers -->
+  <safe:AttackSurface xmi:id="_as_NetworkInterface" base_Class="_NetworkInterface"
+                      attackTypes="command-injection replay-attack spoofing"/>
+  <safe:AttackSurface xmi:id="_as_DoseCalculator"   base_Class="_DoseCalculator"
+                      attackTypes="command-injection"/>
+
+</xmi:XMI>
