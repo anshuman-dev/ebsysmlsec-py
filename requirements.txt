@@ -1,4 +1,4 @@
 anthropic>=0.40.0
-gradio>=4.44.0
+gradio==5.9.1
 pandas>=2.0.0
 lxml>=5.0.0
